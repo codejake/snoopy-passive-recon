@@ -2,22 +2,24 @@
 
 ## Project Overview
 
-This repository contains a single-user-facing script, [snoopy.py](/Users/jshaw/Projects/snoopy_py/snoopy.py:1), plus `uv` project metadata in [pyproject.toml](/Users/jshaw/Projects/snoopy_py/pyproject.toml:1).
+This repository is intentionally compact. It centers on the single user-facing script [snoopy.py](/Users/jshaw/Projects/snoopy-passive-recon/snoopy.py:1) plus `uv` project metadata in [pyproject.toml](/Users/jshaw/Projects/snoopy-passive-recon/pyproject.toml:1).
 
 `snoopy.py` is a passive local-network reconnaissance dashboard. It:
 
 - launches `tcpdump`
 - reads pcap bytes from stdout
-- decodes several discovery/routing protocols
+- decodes discovery and routing protocols
 - displays aggregated discoveries in a Textual TUI
 - can save the current device list to JSON
 
 ## Working Agreements
 
 - Preserve the passive nature of the tool unless the user explicitly asks for active scanning behavior.
+- Prefer small, surgical edits over broad refactors.
+- Preserve existing project conventions unless explicitly asked to change them.
 - Keep `pyproject.toml` and the inline `uv` script metadata in `snoopy.py` aligned when changing Python or dependency requirements.
 - Treat `tcpdump` as a required external dependency. It is not managed by `uv`.
-- Prefer small, surgical edits. This repo is intentionally compact.
+- Minimize third-party dependencies and justify any new dependency before adding it.
 
 ## Environment Expectations
 
@@ -27,41 +29,40 @@ This repository contains a single-user-facing script, [snoopy.py](/Users/jshaw/P
 - System dependency: `tcpdump`
 - Supported platforms: macOS and Linux
 
-## Useful Commands
+## Code Standards
 
-Sync the local environment:
+- Write production-quality Python that is clear, maintainable, and minimally complex.
+- Use type hints for public functions and any non-trivial internal functions.
+- Write docstrings for public modules, classes, and functions.
+- Comment code only where intent or behavior is not obvious.
+- Prefer standard library solutions unless a third-party dependency is clearly justified.
+- Handle errors explicitly and surface actionable error messages.
+- Do not swallow exceptions silently.
+- Validate inputs early and fail predictably.
+
+## Tooling And Validation
+
+Use `uv` for Python environment and dependency management.
+
+Useful commands:
 
 ```bash
 uv sync
-```
-
-Run the app:
-
-```bash
 uv run snoopy.py
-```
-
-Run with privileges when needed for packet capture:
-
-```bash
 sudo uv run snoopy.py
-```
-
-Syntax check:
-
-```bash
 python3 -m py_compile snoopy.py
 ```
 
-## Verification Guidance
+Validation guidance:
 
-For most changes, use the lightest verification that proves the edit:
-
-- `python3 -m py_compile snoopy.py` for syntax safety
-- `uv run snoopy.py --help` when dependency resolution is available
-- a live run only when the change affects capture behavior or TUI behavior
-
-Be careful with automated tests or runs that assume packet-capture permissions. Those may require `sudo` or fail in sandboxed environments.
+- Use the lightest verification that proves the edit.
+- `python3 -m py_compile snoopy.py` is the default syntax check.
+- `uv run snoopy.py --help` is useful when dependency resolution is available.
+- Run a live capture only when the change affects capture behavior or TUI behavior.
+- Be careful with checks that assume packet-capture permissions; they may require `sudo` or fail in sandboxed environments.
+- Run `ruff check` on changed Python files when available.
+- If formatting is needed, run `ruff format` on changed Python files.
+- If `uv`, `ruff`, or any other relevant validation cannot be run, say so clearly.
 
 ## Common Change Areas
 
@@ -69,6 +70,13 @@ Be careful with automated tests or runs that assume packet-capture permissions. 
 - capture lifecycle: `CaptureSession`
 - TUI behavior and save action: `SnoopyDashboard`
 - protocol decoding: `decode_*` helpers and packet parsing functions
+
+## Safety
+
+- Do not revert, overwrite, or reformat unrelated user changes.
+- Do not modify unrelated files.
+- Do not make destructive git changes unless explicitly requested.
+- Do not store secrets in code.
 
 ## Documentation Expectations
 
@@ -78,3 +86,9 @@ When updating docs:
 - document the `tcpdump` dependency clearly
 - include `uv` setup and run commands
 - keep keyboard shortcuts in sync with the app bindings
+
+## Final Response
+
+- Summarize the change briefly.
+- Mention what validation was run.
+- Call out any known limitations, follow-ups, or risks.

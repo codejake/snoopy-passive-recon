@@ -4,7 +4,7 @@
 
 `snoopy.py` is a passive local-network reconnaissance tool with a Textual TUI. It listens for common discovery and routing traffic already present on the LAN, turns that traffic into structured discovery events, and presents the results in a live dashboard.
 
-It does not actively scan or probe hosts. Instead, it watches traffic such as LLDP, CDP, mDNS, NBNS, SSDP, WS-Discovery, and OSPF/OSPFv3 to help you understand what devices and services are advertising themselves.
+It does not actively scan or probe hosts. Instead, it watches traffic such as LLDP, CDP, DHCP, mDNS, NBNS, SSDP, WS-Discovery, and OSPF/OSPFv3 to help you understand what devices and services are advertising themselves.
 
 ## History
 
@@ -104,6 +104,7 @@ The saved JSON file is written to the current working directory.
 
 - LLDP
 - CDP
+- DHCP
 - mDNS
 - NBNS
 - SSDP
@@ -115,6 +116,7 @@ The saved JSON file is written to the current working directory.
 
 - Snoopy is passive. If the network is quiet, the dashboard will stay quiet.
 - Discovery quality depends on what neighboring devices choose to advertise.
+- DHCP `DHCPOFFER` traffic is often reply traffic directed at a specific client, so whether Snoopy can see it depends on your capture vantage point.
 - `tcpdump` must be present and runnable by the current user.
 - Interface auto-detection currently supports macOS and Linux only.
 

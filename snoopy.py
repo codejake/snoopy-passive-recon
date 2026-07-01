@@ -26,6 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO, Final, Iterator
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import DataTable, Footer, Header, RichLog, Static
@@ -33,6 +34,8 @@ from textual.widgets import DataTable, Footer, Header, RichLog, Static
 TCPDUMP_FILTER: Final[str] = (
     "(ether dst 01:00:0c:cc:cc:cc) or "
     "(ether proto 0x88cc) or "
+    "(udp port 67) or "
+    "(udp port 68) or "
     "(udp port 5353) or "
     "(udp port 137) or "
     "(udp port 1900) or "
@@ -53,10 +56,55 @@ MDNS_PORT: Final[int] = 5353
 NBNS_PORT: Final[int] = 137
 SSDP_PORT: Final[int] = 1900
 WSD_PORT: Final[int] = 3702
+DHCP_SERVER_PORT: Final[int] = 67
+DHCP_CLIENT_PORT: Final[int] = 68
+DHCP_FIXED_HEADER_LEN: Final[int] = 236
+DHCP_MAGIC_COOKIE: Final[bytes] = b"\x63\x82\x53\x63"
+DHCP_OPTION_END: Final[int] = 255
+DHCP_OPTION_PAD: Final[int] = 0
+DHCP_OPTION_HOSTNAME: Final[int] = 12
+DHCP_OPTION_SUBNET_MASK: Final[int] = 1
+DHCP_OPTION_ROUTER: Final[int] = 3
+DHCP_OPTION_DNS_SERVERS: Final[int] = 6
+DHCP_OPTION_DOMAIN_NAME: Final[int] = 15
+DHCP_OPTION_NTP_SERVERS: Final[int] = 42
+DHCP_OPTION_NETBIOS_NAME_SERVERS: Final[int] = 44
+DHCP_OPTION_NETBIOS_NODE_TYPE: Final[int] = 46
+DHCP_OPTION_MESSAGE_TYPE: Final[int] = 53
+DHCP_OPTION_REQUESTED_IP: Final[int] = 50
+DHCP_OPTION_LEASE_TIME: Final[int] = 51
+DHCP_OPTION_SERVER_IDENTIFIER: Final[int] = 54
+DHCP_OPTION_RENEWAL_TIME: Final[int] = 58
+DHCP_OPTION_REBINDING_TIME: Final[int] = 59
+DHCP_OPTION_TFTP_SERVER_NAME: Final[int] = 66
+DHCP_OPTION_BOOTFILE_NAME: Final[int] = 67
+DHCP_OPTION_DOMAIN_SEARCH: Final[int] = 119
+DHCP_OPTION_CLASSLESS_STATIC_ROUTES: Final[int] = 121
+DHCP_OPTION_MS_CLASSLESS_STATIC_ROUTES: Final[int] = 249
+DHCP_MESSAGE_TYPES: Final[dict[int, str]] = {
+    1: "discover",
+    2: "offer",
+    3: "request",
+    4: "decline",
+    5: "ack",
+    6: "nak",
+    7: "release",
+    8: "inform",
+}
 LLC_SNAP_DSAP: Final[int] = 0xAA
 LLC_SNAP_SSAP: Final[int] = 0xAA
 SNAP_CISCO_OUI: Final[bytes] = b"\x00\x00\x0c"
 SNAP_PID_CDP: Final[int] = 0x2000
+DEVICE_TABLE_FIXED_COLUMNS: Final[dict[str, int]] = {
+    "protocol": 10,
+    "identity": 28,
+    "source_ip": 20,
+    "source_mac": 18,
+    "location": 22,
+    "seen_count": 6,
+    "last_seen": 10,
+}
+DEVICE_TABLE_DETAILS_MIN_WIDTH: Final[int] = 60
 
 
 class SnoopyError(RuntimeError):
@@ -303,6 +351,7 @@ class SnoopyDashboard(App[None]):
         self.selected_record_key: str | None = None
         self.sort_column = "last_seen"
         self.sort_reverse = True
+        self.details_column_key = "details"
 
     def compose(self) -> ComposeResult:
         """Compose the dashboard layout."""
@@ -332,14 +381,37 @@ class SnoopyDashboard(App[None]):
         table = self.query_one("#devices", DataTable)
         table.cursor_type = "row"
         table.zebra_stripes = True
-        table.add_column("Protocol", key="protocol", width=10)
-        table.add_column("Identity", key="identity", width=28)
-        table.add_column("Source IP", key="source_ip", width=20)
-        table.add_column("Source MAC", key="source_mac", width=18)
-        table.add_column("Location", key="location", width=22)
-        table.add_column("Seen", key="seen_count", width=6)
-        table.add_column("Last Seen", key="last_seen", width=10)
-        table.add_column("Details", key="details", width=60)
+        table.add_column(
+            "Protocol", key="protocol", width=DEVICE_TABLE_FIXED_COLUMNS["protocol"]
+        )
+        table.add_column(
+            "Identity", key="identity", width=DEVICE_TABLE_FIXED_COLUMNS["identity"]
+        )
+        table.add_column(
+            "Source IP", key="source_ip", width=DEVICE_TABLE_FIXED_COLUMNS["source_ip"]
+        )
+        table.add_column(
+            "Source MAC",
+            key="source_mac",
+            width=DEVICE_TABLE_FIXED_COLUMNS["source_mac"],
+        )
+        table.add_column(
+            "Location", key="location", width=DEVICE_TABLE_FIXED_COLUMNS["location"]
+        )
+        table.add_column(
+            "Seen", key="seen_count", width=DEVICE_TABLE_FIXED_COLUMNS["seen_count"]
+        )
+        table.add_column(
+            "Last Seen",
+            key="last_seen",
+            width=DEVICE_TABLE_FIXED_COLUMNS["last_seen"],
+        )
+        self.details_column_key = table.add_column(
+            "Details",
+            key=self.details_column_key,
+            width=DEVICE_TABLE_DETAILS_MIN_WIDTH,
+        )
+        self.resize_details_column()
 
         self.refresh_status()
         self.refresh_summary()
@@ -357,6 +429,37 @@ class SnoopyDashboard(App[None]):
         """Stop capture when the app exits."""
 
         self.capture_session.stop()
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Resize the details column to absorb remaining table width."""
+
+        if self.is_mounted:
+            self.resize_details_column()
+
+    def resize_details_column(self) -> None:
+        """Stretch the details column into any remaining table space."""
+
+        table = self.query_one("#devices", DataTable)
+        available_width = table.content_region.width or table.size.width
+        if available_width <= 0 or self.details_column_key not in table.columns:
+            return
+
+        padding_width = 2 * table.cell_padding
+        fixed_render_width = sum(
+            width + padding_width for width in DEVICE_TABLE_FIXED_COLUMNS.values()
+        )
+        details_width = max(
+            DEVICE_TABLE_DETAILS_MIN_WIDTH,
+            available_width - fixed_render_width - padding_width,
+        )
+        column = table.columns[self.details_column_key]
+        if column.width == details_width:
+            return
+
+        column.width = details_width
+        table._require_update_dimensions = True
+        table.check_idle()
+        table.refresh(layout=True)
 
     def action_toggle_log(self) -> None:
         """Show or hide the recent discoveries pane."""
@@ -1165,6 +1268,12 @@ def decode_udp(context: PacketContext, payload: bytes) -> list[Event]:
         return []
     src_port, dst_port, length, _ = struct.unpack("!HHHH", payload[:8])
     udp_payload = payload[8:length] if length >= 8 else payload[8:]
+    if src_port in {DHCP_SERVER_PORT, DHCP_CLIENT_PORT} or dst_port in {
+        DHCP_SERVER_PORT,
+        DHCP_CLIENT_PORT,
+    }:
+        event = decode_dhcp(context, udp_payload)
+        return [event] if event else []
     if src_port == MDNS_PORT or dst_port == MDNS_PORT:
         event = decode_mdns(context, udp_payload)
         return [event] if event else []
@@ -1178,6 +1287,279 @@ def decode_udp(context: PacketContext, payload: bytes) -> list[Event]:
         event = decode_ws_discovery(context, udp_payload)
         return [event] if event else []
     return []
+
+
+def decode_dhcp(context: PacketContext, payload: bytes) -> Event | None:
+    """Decode common DHCP messages while keeping the event stream compact."""
+
+    if len(payload) < DHCP_FIXED_HEADER_LEN + len(DHCP_MAGIC_COOKIE):
+        return None
+
+    op = payload[0]
+    hlen = payload[2]
+    if op not in {1, 2} or hlen == 0 or hlen > 16:
+        return None
+
+    ciaddr = str(ipaddress.IPv4Address(payload[12:16]))
+    yiaddr = str(ipaddress.IPv4Address(payload[16:20]))
+    siaddr = str(ipaddress.IPv4Address(payload[20:24]))
+    giaddr = str(ipaddress.IPv4Address(payload[24:28]))
+    client_mac = format_mac(payload[28 : 28 + hlen])
+    options_offset = DHCP_FIXED_HEADER_LEN
+    if payload[options_offset : options_offset + 4] != DHCP_MAGIC_COOKIE:
+        return None
+
+    options = parse_dhcp_options(payload[options_offset + 4 :])
+    message_type_value = options.get(DHCP_OPTION_MESSAGE_TYPE, b"")[:1]
+    if not message_type_value:
+        return None
+    message_type = message_type_value[0]
+    message_name = DHCP_MESSAGE_TYPES.get(message_type)
+    if message_name is None:
+        return None
+
+    hostname = safe_text(options.get(DHCP_OPTION_HOSTNAME, b""))
+    requested_ip = parse_dhcp_ipv4_option(options.get(DHCP_OPTION_REQUESTED_IP))
+    server_identifier = parse_dhcp_ipv4_option(
+        options.get(DHCP_OPTION_SERVER_IDENTIFIER)
+    )
+    relay = giaddr if giaddr != "0.0.0.0" else ""
+    next_server = siaddr if siaddr != "0.0.0.0" else ""
+    assigned_ip = yiaddr if yiaddr != "0.0.0.0" else ""
+
+    if op == 2:
+        identity = server_identifier or context.src_ip or context.src_mac
+        source_ip = context.src_ip or server_identifier or "n/a"
+        location = relay or next_server or (context.dst_ip or "broadcast")
+        detail_parts = []
+        if assigned_ip:
+            detail_parts.append(f"offered_ip={assigned_ip}")
+        if server_identifier:
+            detail_parts.append(f"server_id={server_identifier}")
+        if next_server:
+            detail_parts.append(f"next_server={next_server}")
+        if relay:
+            detail_parts.append(f"relay={relay}")
+        detail_parts.extend(format_dhcp_scope_options(options))
+        if message_name == "offer":
+            detail_parts.append(
+                "visibility=reply traffic; passive visibility depends on capture vantage"
+            )
+        return Event(
+            protocol="DHCP",
+            summary=f"DHCP {message_name} server={identity}",
+            dedupe_key=f"dhcp:server:{message_name}:{identity}:{relay or '-'}",
+            identity=identity,
+            source_mac=context.src_mac,
+            source_ip=source_ip,
+            location=location,
+            details=" | ".join(detail_parts) or f"message_type={message_name}",
+        )
+
+    client_identity = hostname or client_mac or context.src_mac
+    source_ip = ciaddr if ciaddr != "0.0.0.0" else (context.src_ip or "0.0.0.0")
+    location = server_identifier or relay or (context.dst_ip or "broadcast")
+    detail_parts = [f"client_mac={client_mac}"]
+    if hostname:
+        detail_parts.append(f"hostname={hostname}")
+    if requested_ip:
+        detail_parts.append(f"requested_ip={requested_ip}")
+    if server_identifier:
+        detail_parts.append(f"server_id={server_identifier}")
+    if relay:
+        detail_parts.append(f"relay={relay}")
+
+    return Event(
+        protocol="DHCP",
+        summary=f"DHCP {message_name} client={client_identity}",
+        dedupe_key=f"dhcp:client:{message_name}:{client_mac or client_identity}",
+        identity=client_identity,
+        source_mac=client_mac or context.src_mac,
+        source_ip=source_ip,
+        location=location,
+        details=" | ".join(detail_parts),
+    )
+
+
+def parse_dhcp_options(payload: bytes) -> dict[int, bytes]:
+    """Parse DHCP options into a simple code-to-value mapping."""
+
+    options: dict[int, bytes] = {}
+    offset = 0
+    while offset < len(payload):
+        code = payload[offset]
+        offset += 1
+        if code == DHCP_OPTION_PAD:
+            continue
+        if code == DHCP_OPTION_END:
+            break
+        if offset >= len(payload):
+            break
+        length = payload[offset]
+        offset += 1
+        if offset + length > len(payload):
+            break
+        options[code] = payload[offset : offset + length]
+        offset += length
+    return options
+
+
+def parse_dhcp_ipv4_option(value: bytes | None) -> str | None:
+    """Decode a 4-byte DHCP option payload as an IPv4 address."""
+
+    if value is None or len(value) != 4:
+        return None
+    return str(ipaddress.IPv4Address(value))
+
+
+def parse_dhcp_ipv4_list_option(value: bytes | None) -> list[str]:
+    """Decode a DHCP option payload as a list of IPv4 addresses."""
+
+    if value is None or len(value) == 0 or len(value) % 4 != 0:
+        return []
+    return [
+        str(ipaddress.IPv4Address(value[offset : offset + 4]))
+        for offset in range(0, len(value), 4)
+    ]
+
+
+def parse_dhcp_u32_option(value: bytes | None) -> int | None:
+    """Decode a DHCP option payload as a big-endian unsigned integer."""
+
+    if value is None or len(value) != 4:
+        return None
+    return struct.unpack("!I", value)[0]
+
+
+def parse_dhcp_domain_search_option(value: bytes | None) -> list[str]:
+    """Decode RFC 3397-style domain search data when it is uncompressed."""
+
+    if not value:
+        return []
+
+    names: list[str] = []
+    labels: list[str] = []
+    offset = 0
+    while offset < len(value):
+        length = value[offset]
+        offset += 1
+        if length == 0:
+            if labels:
+                names.append(".".join(labels))
+                labels = []
+            continue
+        if length & 0xC0:
+            return []
+        if offset + length > len(value):
+            return []
+        labels.append(safe_text(value[offset : offset + length]))
+        offset += length
+
+    if labels:
+        names.append(".".join(labels))
+    return names
+
+
+def parse_dhcp_classless_routes_option(value: bytes | None) -> list[str]:
+    """Decode DHCP classless static routes (options 121/249)."""
+
+    if not value:
+        return []
+
+    routes: list[str] = []
+    offset = 0
+    while offset < len(value):
+        prefix_length = value[offset]
+        offset += 1
+        destination_octets = (prefix_length + 7) // 8
+        if offset + destination_octets + 4 > len(value):
+            return []
+
+        destination_bytes = value[offset : offset + destination_octets]
+        offset += destination_octets
+        destination = destination_bytes + b"\x00" * (4 - destination_octets)
+        gateway = value[offset : offset + 4]
+        offset += 4
+        routes.append(
+            f"{ipaddress.IPv4Address(destination)}/{prefix_length}->{ipaddress.IPv4Address(gateway)}"
+        )
+    return routes
+
+
+def format_dhcp_scope_options(options: dict[int, bytes]) -> list[str]:
+    """Render high-signal DHCP scope-style options for server replies."""
+
+    detail_parts: list[str] = []
+
+    subnet_mask = parse_dhcp_ipv4_option(options.get(DHCP_OPTION_SUBNET_MASK))
+    if subnet_mask:
+        detail_parts.append(f"mask={subnet_mask}")
+
+    routers = parse_dhcp_ipv4_list_option(options.get(DHCP_OPTION_ROUTER))
+    if routers:
+        detail_parts.append(f"router={','.join(routers)}")
+
+    dns_servers = parse_dhcp_ipv4_list_option(options.get(DHCP_OPTION_DNS_SERVERS))
+    if dns_servers:
+        detail_parts.append(f"dns={','.join(dns_servers)}")
+
+    domain_name = safe_text(options.get(DHCP_OPTION_DOMAIN_NAME, b""))
+    if domain_name:
+        detail_parts.append(f"domain={domain_name}")
+
+    domain_search = parse_dhcp_domain_search_option(
+        options.get(DHCP_OPTION_DOMAIN_SEARCH)
+    )
+    if domain_search:
+        detail_parts.append(f"search={','.join(domain_search)}")
+
+    ntp_servers = parse_dhcp_ipv4_list_option(options.get(DHCP_OPTION_NTP_SERVERS))
+    if ntp_servers:
+        detail_parts.append(f"ntp={','.join(ntp_servers)}")
+
+    netbios_servers = parse_dhcp_ipv4_list_option(
+        options.get(DHCP_OPTION_NETBIOS_NAME_SERVERS)
+    )
+    if netbios_servers:
+        detail_parts.append(f"netbios_ns={','.join(netbios_servers)}")
+
+    netbios_node_type = options.get(DHCP_OPTION_NETBIOS_NODE_TYPE, b"")[:1]
+    if netbios_node_type:
+        detail_parts.append(f"netbios_node_type={netbios_node_type[0]}")
+
+    lease_time = parse_dhcp_u32_option(options.get(DHCP_OPTION_LEASE_TIME))
+    if lease_time is not None:
+        detail_parts.append(f"lease={lease_time}s")
+
+    renewal_time = parse_dhcp_u32_option(options.get(DHCP_OPTION_RENEWAL_TIME))
+    if renewal_time is not None:
+        detail_parts.append(f"t1={renewal_time}s")
+
+    rebinding_time = parse_dhcp_u32_option(options.get(DHCP_OPTION_REBINDING_TIME))
+    if rebinding_time is not None:
+        detail_parts.append(f"t2={rebinding_time}s")
+
+    tftp_server = safe_text(options.get(DHCP_OPTION_TFTP_SERVER_NAME, b""))
+    if tftp_server:
+        detail_parts.append(f"tftp={tftp_server}")
+
+    bootfile = safe_text(options.get(DHCP_OPTION_BOOTFILE_NAME, b""))
+    if bootfile:
+        detail_parts.append(f"bootfile={bootfile}")
+
+    routes = parse_dhcp_classless_routes_option(
+        options.get(DHCP_OPTION_CLASSLESS_STATIC_ROUTES)
+    )
+    if routes:
+        detail_parts.append(f"routes={';'.join(routes)}")
+
+    ms_routes = parse_dhcp_classless_routes_option(
+        options.get(DHCP_OPTION_MS_CLASSLESS_STATIC_ROUTES)
+    )
+    if ms_routes:
+        detail_parts.append(f"ms_routes={';'.join(ms_routes)}")
+
+    return detail_parts
 
 
 def decode_mdns(context: PacketContext, payload: bytes) -> Event | None:

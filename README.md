@@ -4,6 +4,10 @@
 
 It does not actively scan or probe hosts. Instead, it watches traffic such as LLDP, CDP, mDNS, NBNS, SSDP, WS-Discovery, and OSPF/OSPFv3 to help you understand what devices and services are advertising themselves.
 
+## History
+
+`snoopy.py` is a reimagining of the `snoopy.pl` tool that I wrote back in the 1990s.
+
 ## What It Does
 
 - Captures packets with `tcpdump`

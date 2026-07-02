@@ -53,6 +53,14 @@ uv python pin 3.13
 uv sync
 ```
 
+or:
+
+Run it directly from the repo without installing:
+
+```bash
+uv run https://raw.githubusercontent.com/codejake/snoopy-passive-recon/main/snoopy.py -i <interface>
+```
+
 Make sure `tcpdump` is installed separately through your OS package manager or system tools.
 
 ## Usage

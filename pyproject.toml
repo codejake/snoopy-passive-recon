@@ -4,13 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "snoopy-passive-recon"
-version = "0.1.0"
+version = "0.5.6"
 description = "A passive network recon tool"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = [
-    "textual>=8.2.8",
-]
+dependencies = ["textual>=8.2.8"]
 
 [project.scripts]
 snoopy = "snoopy:main"
